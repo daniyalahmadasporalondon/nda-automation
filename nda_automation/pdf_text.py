@@ -351,6 +351,23 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
     if page_count > 1:
         repeated_margins = _repeated_margin_lines([[g.text for g in lines] for lines in page_geo_lines])
 
+    # PER-PAGE OCR rescue for a MIXED text+image PDF (defect B2). The whole-document
+    # scanned fallback below only fires when the ENTIRE document has no text layer
+    # (``if not paragraphs``), so a scanned signature/annex page sitting AMONG
+    # text-layer pages was previously dropped SILENTLY. Here we identify the pages
+    # that produced no text (0-based) and, for a MIXED document only (some pages DO
+    # have text), OCR just those pages so their content is not lost. Any page that
+    # cannot be rescued (OCR off/failed/too large) is named in a degraded-quality
+    # warning below -- nothing is silently dropped. A single-column all-text PDF has
+    # no image-only pages, so this whole block is inert and the output is unchanged.
+    image_only_indices = [i for i, lines in enumerate(page_geo_lines) if not lines]  # 0-based
+    rescued_pages: dict[int, list[str]] = {}
+    if pages_with_text and image_only_indices:
+        for idx, ocr_text in _try_ocr_pages(data, image_only_indices).items():
+            texts = [t for t in _split_pdf_paragraphs(_normalized_lines(ocr_text)) if t.strip()]
+            if texts:
+                rescued_pages[idx] = texts
+
     paragraphs: List[Paragraph] = []
     for page_index, geo_lines in enumerate(page_geo_lines, start=1):
         filtered_lines = _filtered_geo_lines(geo_lines, repeated_margins)
@@ -372,6 +389,54 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
             if geometry is not None:
                 paragraph["pdf_geometry"] = geometry
             paragraphs.append(paragraph)
+        # OCR-rescued paragraphs for an image-only page, inserted at the page's
+        # natural reading position (the loop is already in page order). Flagged
+        # ``ocr`` so downstream never mistakes them for a clean text layer.
+        for paragraph_text in rescued_pages.get(page_index - 1, []):
+            paragraphs.append({
+                "id": f"p{len(paragraphs) + 1}",
+                "source_index": len(paragraphs) + 1,
+                "source_part": "pdf",
+                "page_number": page_index,
+                "text": paragraph_text,
+                "ocr": True,
+            })
+
+    # Image-only pages that remained un-rescued (OCR off/failed/too large) in a
+    # mixed document: their content is missing from the review and MUST be surfaced.
+    image_only_page_numbers = [i + 1 for i in image_only_indices]
+    dropped_image_pages = (
+        [p for p in image_only_page_numbers if (p - 1) not in rescued_pages]
+        if pages_with_text else []
+    )
+    ocr_pages_recovered = sorted(idx + 1 for idx in rescued_pages)
+
+    # AcroForm (fillable-PDF) field VALUES (defect B1). A fillable NDA carries party
+    # names/dates/amounts in form-field /V values that the text-layer extraction
+    # above never reads, so the reviewer sees a BLANK template. Append the field
+    # values as an explicit, clearly-labelled 'form field values' section (we cannot
+    # honestly derive their on-page position from the text layer) and flag the doc as
+    # a form below. A normal PDF has no AcroForm, so this is inert and byte-identical.
+    form_field_entries = _extract_acroform_field_values(reader)
+    if form_field_entries:
+        paragraphs.append({
+            "id": f"p{len(paragraphs) + 1}",
+            "source_index": len(paragraphs) + 1,
+            "source_part": "pdf",
+            "page_number": page_count,
+            "text": "Form field values (fillable PDF):",
+            "form_field": True,
+        })
+        for label, value in form_field_entries:
+            entry_text = f"{label}: {value}" if label else value
+            paragraphs.append({
+                "id": f"p{len(paragraphs) + 1}",
+                "source_index": len(paragraphs) + 1,
+                "source_part": "pdf",
+                "page_number": page_count,
+                "text": entry_text,
+                "form_field": True,
+            })
 
     if not paragraphs:
         # No text layer (scanned / image-only PDF). Try the OCR fallback FIRST. It
@@ -405,7 +470,14 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
         repeated_margin_count=len(repeated_margins),
         visual_profile=visual_profile,
         reading_order=reading_order,
+        form_fields_present=bool(form_field_entries),
+        image_only_pages_dropped=dropped_image_pages,
+        ocr_pages_recovered=ocr_pages_recovered,
     )
+    if ocr_pages_recovered:
+        # Some image-only pages were rescued by per-page OCR -- flag the recovery so
+        # downstream never treats the OCR'd text as a clean text layer.
+        quality["ocr_recovered"] = True
     # ADDITIVE, default-OFF table recovery. When NDA_TABLE_AUGMENTATION_ENABLED is
     # unset/false this is a strict no-op (the quality block is returned unchanged
     # and the prose paragraphs above are never touched). When ON it attaches
@@ -420,6 +492,110 @@ def extract_pdf_document(data: bytes, *, include_visual_profile: bool = True) ->
     # augment_quality_with_tables is unchanged either way.
     quality = augment_quality_with_tables(quality, data)
     return PdfExtraction(paragraphs=paragraphs, quality=quality)
+
+
+def _try_ocr_pages(data: bytes, page_indices: list[int]) -> dict[int, str]:
+    """Per-PAGE OCR rescue for image-only pages in a MIXED document (defect B2).
+
+    Returns ``{0-based page index: recovered text}`` for pages the DEFAULT-OFF OCR
+    fallback could transcribe; an empty dict when OCR is off/unconfigured/unavailable
+    or nothing was recovered. NEVER raises. Partial results are intentional: the
+    caller names any un-rescued page in a degraded-quality warning, so nothing is
+    silently lost.
+    """
+
+    if not page_indices:
+        return {}
+    try:
+        from .pdf_ocr import ocr_pdf_pages
+    except Exception:
+        return {}
+    try:
+        result = ocr_pdf_pages(data, page_indices)
+    except Exception:
+        # ocr_pdf_pages is fail-safe by contract; belt-and-suspenders.
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _extract_acroform_field_values(reader: Any) -> list[tuple[str, str]]:
+    """Read fillable-PDF (AcroForm) field label/value pairs (defect B1).
+
+    Returns an ordered list of ``(label, value)`` for every form field that carries
+    a NON-EMPTY value. Returns ``[]`` when the PDF has no AcroForm (the normal case
+    -- so extraction stays byte-identical for ordinary PDFs) or when the fields
+    cannot be read. NEVER raises.
+
+    The text-layer extraction never reads AcroForm ``/V`` values, so a fillable NDA
+    (party names, dates, amounts entered into form fields) reaches the reviewer as a
+    blank template. We surface those values so nothing is silently dropped. Checkbox
+    off-states (``/Off``) and empty values are skipped; a checkbox on-state exports
+    as its value name with the leading ``/`` removed.
+    """
+
+    try:
+        fields = reader.get_fields()
+    except Exception:
+        return []
+    if not fields:
+        return []
+
+    entries: list[tuple[str, str]] = []
+    try:
+        items = list(fields.items())
+    except Exception:
+        return []
+    for name, field in items:
+        raw_value = None
+        try:
+            if hasattr(field, "get"):
+                raw_value = field.get("/V")
+            if raw_value is None:
+                raw_value = getattr(field, "value", None)
+        except Exception:
+            raw_value = None
+        value = _normalize_form_field_value(raw_value)
+        if not value:
+            continue
+        label = _normalize_form_field_label(name, field)
+        entries.append((label, value))
+    return entries
+
+
+def _normalize_form_field_value(value: Any) -> str:
+    """Coerce a form field ``/V`` into clean review text; '' when empty/off."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", "replace")
+        except Exception:
+            return ""
+    text = " ".join(str(value).split())
+    if not text:
+        return ""
+    # A checkbox/radio off-state carries no information for the reviewer.
+    if text in {"/Off", "Off"}:
+        return ""
+    # A checkbox on-state (``/Yes``, ``/1``) exports as a name; drop the leading /.
+    if text.startswith("/"):
+        text = text[1:].strip()
+    return text
+
+
+def _normalize_form_field_label(name: Any, field: Any) -> str:
+    """Human-readable label for a form field: /T name (or fully-qualified key)."""
+
+    label: Any = None
+    try:
+        if hasattr(field, "get"):
+            label = field.get("/T")
+    except Exception:
+        label = None
+    if not label:
+        label = name
+    return " ".join(str(label or "").split())
 
 
 def _try_ocr_fallback(data: bytes, *, page_count: int) -> PdfExtraction | None:
@@ -1766,6 +1942,22 @@ def _reading_order_signal(
     }
 
 
+def _mark_reading_order_degraded(
+    reading_order: dict[str, object] | None, reason: str
+) -> None:
+    """Flag the reading-order signal degraded and record a reason (idempotent)."""
+
+    if not isinstance(reading_order, dict):
+        return
+    reading_order["degraded"] = True
+    reasons = reading_order.get("reasons")
+    if isinstance(reasons, list):
+        if reason not in reasons:
+            reasons.append(reason)
+    else:
+        reading_order["reasons"] = [reason]
+
+
 def _pdf_quality_report(
     *,
     page_count: int,
@@ -1776,6 +1968,9 @@ def _pdf_quality_report(
     repeated_margin_count: int,
     visual_profile: dict[str, object] | None = None,
     reading_order: dict[str, object] | None = None,
+    form_fields_present: bool = False,
+    image_only_pages_dropped: list[int] | None = None,
+    ocr_pages_recovered: list[int] | None = None,
 ) -> dict[str, object]:
     extracted_characters = len(extracted_text)
     warnings: list[dict[str, object]] = []
@@ -1827,6 +2022,42 @@ def _pdf_quality_report(
                     "confirm the reading order against the original source."
                 ),
             })
+    # PER-PAGE OCR recovery notice (defect B2). Image-only pages amid text pages
+    # that OCR rescued -- flag so the OCR'd text is not mistaken for a clean layer.
+    if ocr_pages_recovered:
+        pages_str = ", ".join(str(p) for p in ocr_pages_recovered)
+        warnings.append({
+            "type": "pdf_ocr_page_recovered",
+            "message": (
+                f"PDF page(s) {pages_str} had no text layer and were recovered by OCR; "
+                "the text may contain transcription errors. Verify against the original document."
+            ),
+        })
+    # DROPPED image-only pages (defect B2). A mixed text+image PDF whose scanned
+    # page(s) could NOT be rescued -- name them explicitly and mark the extraction
+    # degraded so nothing is silently lost.
+    if image_only_pages_dropped:
+        pages_str = ", ".join(str(p) for p in image_only_pages_dropped)
+        warnings.append({
+            "type": "pdf_image_only_pages_dropped",
+            "message": (
+                f"PDF page(s) {pages_str} contain no text layer (likely scanned or image-only) and "
+                "their content is NOT included in this review. Review those pages against the original PDF."
+            ),
+        })
+        _mark_reading_order_degraded(reading_order, "image_only_pages_dropped")
+    # FILLABLE-FORM notice (defect B1). The form field values were appended in a
+    # dedicated section rather than at their on-page position -- say so, and mark
+    # the extraction degraded so the reviewer verifies placement.
+    if form_fields_present:
+        warnings.append({
+            "type": "pdf_form_fields",
+            "message": (
+                "This PDF is a fillable form; its form field values were appended in a 'Form field values' "
+                "section (their on-page position cannot be reliably derived). Verify against the original document."
+            ),
+        })
+        _mark_reading_order_degraded(reading_order, "fillable_form_fields")
     quality: dict[str, object] = {
         "page_count": page_count,
         "pages_with_text": pages_with_text,

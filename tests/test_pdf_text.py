@@ -3149,3 +3149,165 @@ class PdfGarbleProducerTests(unittest.TestCase):
         ]
         doc = extract_pdf_document(g._build([ops]))
         self.assertIn("Disclosing Party: Registered Office:", [p["text"] for p in doc.paragraphs])
+
+
+def _text_pdf(text: str, *, pages: int = 1) -> bytes:
+    """A plain text-layer PDF (fast path). Byte-identity anchor for B1/B2."""
+    import fitz
+
+    document = fitz.open()
+    for _ in range(pages):
+        page = document.new_page(width=612, height=792)
+        page.insert_text((72, 720), text, fontsize=12)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def _fillable_form_pdf(fields: list[tuple[str, str]]) -> bytes:
+    """A fillable PDF: a text label drawn on the page + AcroForm fields with values."""
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    y = 700
+    for name, value in fields:
+        page.insert_text((72, y + 12), f"{name}:", fontsize=12)
+        widget = fitz.Widget()
+        widget.field_name = name
+        widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
+        widget.rect = fitz.Rect(200, y, 500, y + 18)
+        widget.field_value = value
+        page.add_widget(widget)
+        y -= 40
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+def _mixed_text_image_pdf() -> bytes:
+    """A 3-page PDF: text / image-only (no text layer) / text."""
+    import fitz
+
+    document = fitz.open()
+    p1 = document.new_page(width=612, height=792)
+    p1.insert_text(
+        (72, 720),
+        "This Agreement is governed by the laws of California and the confidential terms herein.",
+        fontsize=12,
+    )
+    p2 = document.new_page(width=612, height=792)
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 4, 4), False)
+    pixmap.set_rect(pixmap.irect, (10, 20, 30))
+    p2.insert_image(fitz.Rect(50, 50, 560, 742), pixmap=pixmap)
+    p3 = document.new_page(width=612, height=792)
+    p3.insert_text(
+        (72, 720),
+        "The parties agree the confidential information shall not be disclosed to third parties.",
+        fontsize=12,
+    )
+    data = document.tobytes()
+    document.close()
+    return data
+
+
+@requires_pymupdf
+class AcroFormFieldValueTests(unittest.TestCase):
+    """Defect B1: fillable-PDF field VALUES must reach the reviewer, not be dropped."""
+
+    def test_form_field_values_are_extracted(self):
+        data = _fillable_form_pdf([("party_name", "Acme Corporation"), ("effective_date", "2026-01-15")])
+        doc = extract_pdf_document(data)
+        joined = "\n".join(str(p["text"]) for p in doc.paragraphs)
+        # The values (previously silently dropped) are now present.
+        self.assertIn("Acme Corporation", joined)
+        self.assertIn("2026-01-15", joined)
+        # A clearly-labelled form-fields section header is emitted.
+        self.assertIn("Form field values", joined)
+        # The recovered field paragraphs are flagged.
+        self.assertTrue(any(p.get("form_field") for p in doc.paragraphs))
+
+    def test_form_pdf_sets_degraded_flag_and_warning(self):
+        data = _fillable_form_pdf([("party_name", "Acme Corporation")])
+        doc = extract_pdf_document(data)
+        warning_types = {w.get("type") for w in doc.quality.get("warnings", [])}
+        self.assertIn("pdf_form_fields", warning_types)
+        self.assertTrue(doc.quality["reading_order"]["degraded"])
+        self.assertIn("fillable_form_fields", doc.quality["reading_order"]["reasons"])
+
+    def test_empty_form_field_values_are_skipped(self):
+        # A form field with no value contributes nothing (no empty "label:" noise).
+        data = _fillable_form_pdf([("blank_field", "")])
+        doc = extract_pdf_document(data)
+        joined = "\n".join(str(p["text"]) for p in doc.paragraphs)
+        self.assertNotIn("Form field values", joined)
+        warning_types = {w.get("type") for w in doc.quality.get("warnings", [])}
+        self.assertNotIn("pdf_form_fields", warning_types)
+
+    def test_plain_text_pdf_unaffected_by_form_logic(self):
+        # No AcroForm -> extraction is byte-identical to before the B1 change.
+        data = _text_pdf("This Agreement shall be governed by the laws of California.")
+        doc = extract_pdf_document(data)
+        self.assertFalse(any(p.get("form_field") for p in doc.paragraphs))
+        warning_types = {w.get("type") for w in doc.quality.get("warnings", [])}
+        self.assertNotIn("pdf_form_fields", warning_types)
+
+
+@requires_pymupdf
+class PerPageOcrRescueTests(unittest.TestCase):
+    """Defect B2: an image-only page amid text pages is rescued or named, never lost."""
+
+    def test_image_only_page_dropped_is_named_and_degraded_when_ocr_off(self):
+        data = _mixed_text_image_pdf()
+        import os
+
+        os.environ.pop("NDA_PDF_OCR_ENABLED", None)
+        doc = extract_pdf_document(data)
+        warnings = {w.get("type"): w.get("message") for w in doc.quality.get("warnings", [])}
+        self.assertIn("pdf_image_only_pages_dropped", warnings)
+        # The dropped page (page 2) is named explicitly.
+        self.assertIn("2", warnings["pdf_image_only_pages_dropped"])
+        self.assertTrue(doc.quality["reading_order"]["degraded"])
+        self.assertIn("image_only_pages_dropped", doc.quality["reading_order"]["reasons"])
+
+    def test_image_only_page_rescued_by_per_page_ocr(self):
+        from nda_automation import pdf_ocr
+
+        data = _mixed_text_image_pdf()
+
+        class Stub:
+            def __call__(self, image_png):
+                return "Exhibit A signature page recovered by the OCR transcription engine."
+
+        with patch.object(pdf_ocr, "resolve_ocr_provider", return_value=Stub()):
+            doc = extract_pdf_document(data)
+
+        joined = "\n".join(str(p["text"]) for p in doc.paragraphs)
+        self.assertIn("Exhibit A signature page recovered", joined)
+        # The rescued paragraph is flagged ocr and sits at the page-2 position.
+        rescued = [p for p in doc.paragraphs if p.get("ocr")]
+        self.assertTrue(rescued)
+        self.assertEqual(rescued[0]["page_number"], 2)
+        # Reading order stays page-ordered: 1, 2, 3.
+        self.assertEqual([p["page_number"] for p in doc.paragraphs], [1, 2, 3])
+        self.assertTrue(doc.quality.get("ocr_recovered"))
+        warning_types = {w.get("type") for w in doc.quality.get("warnings", [])}
+        self.assertIn("pdf_ocr_page_recovered", warning_types)
+        # A rescued page is NOT also reported as dropped.
+        self.assertNotIn("pdf_image_only_pages_dropped", warning_types)
+
+    def test_all_text_pdf_never_triggers_per_page_ocr(self):
+        from nda_automation import pdf_ocr
+
+        data = _text_pdf("The confidential information shall remain protected.", pages=2)
+
+        class Boom:
+            def __call__(self, image_png):
+                raise AssertionError("OCR must not run for an all-text PDF")
+
+        with patch.object(pdf_ocr, "resolve_ocr_provider", return_value=Boom()):
+            doc = extract_pdf_document(data)
+        self.assertFalse(any(p.get("ocr") for p in doc.paragraphs))
+        warning_types = {w.get("type") for w in doc.quality.get("warnings", [])}
+        self.assertNotIn("pdf_image_only_pages_dropped", warning_types)
+        self.assertNotIn("pdf_ocr_page_recovered", warning_types)
