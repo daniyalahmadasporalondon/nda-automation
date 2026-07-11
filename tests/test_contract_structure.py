@@ -746,5 +746,98 @@ class SectionRoleTests(unittest.TestCase):
         self.assertTrue(all("role" in record for record in sections_by_id.values()))
 
 
+class PdfMarketingFalsePositiveTests(unittest.TestCase):
+    """PROOF: a non-contract PDF's marketing numbering (a sales deck's "1. Our Product")
+    is NOT promoted to confident contract-clause structure, while a real NDA's PDF clauses
+    still are."""
+
+    @staticmethod
+    def _pdf_paragraph(index, text, *, font, body_font=11.0):
+        # A geometry-aware PDF paragraph. Slide titles are set in a LARGE font (font >
+        # body_font), which is exactly what used to corroborate the number as a confident
+        # clause; the fix requires contract-clause signals in addition to that geometry.
+        geometry = {
+            "font_size": font,
+            "left_x": 72.0,
+            "body_font": body_font,
+            "heading_font_ratio": font / body_font,
+        }
+        return {"id": f"p{index}", "index": index, "text": text, "pdf_geometry": geometry}
+
+    def test_sales_deck_numbering_is_demoted_not_confident(self):
+        # A non-NDA sales deck: big-font marketing titles + short marketing body. No
+        # contract vocabulary anywhere.
+        paragraphs = [
+            self._pdf_paragraph(0, "1. Our Product", font=22.0),
+            self._pdf_paragraph(1, "The best widget on the market today.", font=11.0),
+            self._pdf_paragraph(2, "2. Our Market", font=22.0),
+            self._pdf_paragraph(3, "A huge and growing opportunity for everyone.", font=11.0),
+            self._pdf_paragraph(4, "3. Our Team", font=22.0),
+            self._pdf_paragraph(5, "Talented people from around the world.", font=11.0),
+        ]
+
+        structure = build_contract_structure(paragraphs)
+        numbered = [s for s in structure["sections"] if s["kind"] == "numbered"]
+
+        # The three slide titles were still detected as sections (structure is preserved),
+        # but demoted: none is high/medium confidence and none is source-backed.
+        self.assertEqual(len(numbered), 3)
+        for section in numbered:
+            self.assertEqual(section["confidence"], "low")
+            self.assertNotIn("source", section)
+        self.assertEqual(structure["stats"]["source_backed_section_count"], 0)
+
+    def test_real_nda_pdf_clauses_stay_confident(self):
+        # A genuine NDA extracted from a PDF: same big-font headings, but the clause bodies
+        # carry contract vocabulary. Clauses MUST remain confident and source-backed.
+        paragraphs = [
+            self._pdf_paragraph(0, "1. Confidentiality", font=14.0),
+            self._pdf_paragraph(
+                1,
+                "The Receiving Party shall not disclose the Confidential Information to any third party.",
+                font=11.0,
+            ),
+            self._pdf_paragraph(2, "2. Term", font=14.0),
+            self._pdf_paragraph(
+                3,
+                "The obligations of the parties under this Agreement shall survive for three years.",
+                font=11.0,
+            ),
+            self._pdf_paragraph(4, "3. Governing Law", font=14.0),
+            self._pdf_paragraph(
+                5,
+                "This Agreement is governed by the laws of England and the parties submit to its jurisdiction.",
+                font=11.0,
+            ),
+        ]
+
+        structure = build_contract_structure(paragraphs)
+        numbered = [s for s in structure["sections"] if s["kind"] == "numbered"]
+
+        self.assertEqual(len(numbered), 3)
+        for section in numbered:
+            self.assertEqual(section["confidence"], "high")
+            self.assertEqual(section["source"]["kind"], "pdf_confident")
+        self.assertEqual(structure["stats"]["source_backed_section_count"], 3)
+
+    def test_docx_marketing_numbering_is_untouched(self):
+        # Regression guard: the demotion pass is PDF-only. A DOCX-sourced parse (no
+        # pdf_geometry) with the SAME sparse-contract-signal marketing text keeps whatever
+        # confidence the DOCX classifiers assigned -- the pass never fires on it.
+        paragraphs = split_document_paragraphs("\n\n".join([
+            "1. Our Product",
+            "The best widget on the market today.",
+            "2. Our Market",
+            "A huge and growing opportunity for everyone.",
+        ]))
+
+        structure = build_contract_structure(paragraphs)
+        numbered = [s for s in structure["sections"] if s["kind"] == "numbered"]
+
+        self.assertEqual(len(numbered), 2)
+        for section in numbered:
+            self.assertEqual(section["confidence"], "high")
+
+
 if __name__ == "__main__":
     unittest.main()
