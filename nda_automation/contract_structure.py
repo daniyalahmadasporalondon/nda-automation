@@ -863,7 +863,9 @@ def _source_metadata(paragraph: Paragraph) -> Dict[str, object] | None:
 def _source_structure_number(paragraph: Paragraph) -> str:
     direct_number = paragraph.get("structure_number")
     if isinstance(direct_number, str) and direct_number.strip():
-        return _clean_source_number(direct_number)
+        cleaned = _clean_source_number(direct_number)
+        if cleaned:
+            return cleaned
     numbering = paragraph.get("numbering")
     if not isinstance(numbering, dict):
         return ""
@@ -871,7 +873,43 @@ def _source_structure_number(paragraph: Paragraph) -> str:
     if number_format in {"bullet", "none"}:
         return ""
     label = str(numbering.get("label") or "").strip()
-    return _clean_source_number(label)
+    cleaned = _clean_source_number(label)
+    if cleaned:
+        return cleaned
+    # Custom ``lvlText`` templates mix literal words with the ``%N`` counter (e.g.
+    # "Article %1" -> label "Article 1"). The bare dotted-identifier match rejects the
+    # space + word, so the autonumbered section was dropped/mis-levelled in the
+    # Structure tab even though the reconstruction ``::before`` shows "Article 1"
+    # (D12). Recover the dotted number path from the level template so the section is
+    # recognised; ``_source_number_level`` still takes the depth from the numbering
+    # ilvl, so "Article %1" lands at the level Word gives it.
+    return _number_from_level_text(numbering)
+
+
+def _number_from_level_text(numbering: Dict[str, object]) -> str:
+    """Recover the dotted number path from a custom ``lvlText`` template (D12).
+
+    ``level_text`` is the raw Word template ("Article %1", "Section %1.%2"); its
+    ``%N`` placeholders were replaced by the rendered counter values in ``label``.
+    Rebuild a regex from the template -- literal segments stay literal, each ``%N``
+    becomes an identifier capture -- match it against the label, and join the
+    captured identifiers with dots. Returns "" when the label yields no recoverable
+    identifier, so a pure-literal template ("Recital") stays unnumbered."""
+    level_text = str(numbering.get("level_text") or "")
+    label = str(numbering.get("label") or "").strip()
+    if "%" not in level_text or not label:
+        return ""
+    segments = re.split(r"%\d+", level_text)
+    pattern = "(.+?)".join(re.escape(segment) for segment in segments)
+    match = re.fullmatch(pattern, label)
+    if match is None:
+        return ""
+    tokens: List[str] = []
+    for raw in match.groups():
+        token = _clean_source_number(str(raw or "").strip())
+        if token:
+            tokens.append(token)
+    return ".".join(tokens)
 
 
 def _clean_source_number(value: str) -> str:

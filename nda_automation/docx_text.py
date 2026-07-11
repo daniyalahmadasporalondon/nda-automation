@@ -304,6 +304,18 @@ def _extract_main_document_paragraphs(document: ZipFile) -> List[DocxParagraph]:
                 numbering_state=numbering_state,
                 table_context=indexed.table_context,
             ))
+        else:
+            # A blank Word-numbered paragraph still consumes the next number in its
+            # ``(numId, ilvl)`` sequence, so we advance the shared counter here even
+            # though we surface no clause. Without this the counter only advanced
+            # inside ``_paragraph_record`` (text-only), and every following clause
+            # numbered ONE LOW versus Word / the faithful surface (D10).
+            _advance_numbering_for_empty_paragraph(
+                indexed.paragraph,
+                styles=styles,
+                numbering=numbering,
+                numbering_state=numbering_state,
+            )
     return paragraphs
 
 
@@ -475,6 +487,39 @@ def _paragraph_record(
     return record
 
 
+def _advance_numbering_for_empty_paragraph(
+    paragraph: ET.Element,
+    *,
+    styles: StyleDefinitions,
+    numbering: NumberingDefinitions,
+    numbering_state: Dict[str, Dict[int, int]],
+) -> None:
+    """Consume the next number for a blank numbered ``<w:p>`` WITHOUT surfacing a clause.
+
+    Word counts an empty numbered paragraph: it takes the next value in its
+    ``(numId, ilvl)`` sequence, so every following clause numbers one higher. Our
+    extractor drops empty paragraphs entirely, so without this the shared counter
+    never advanced and each following clause numbered ONE LOW versus Word / the
+    faithful (docx-preview) surface -- wrong in BOTH the reconstruction ``::before``
+    and the Structure tab (D10). We resolve the paragraph's numbering exactly as
+    ``_paragraph_record`` does and call ``_numbering_record`` purely for its counter
+    side effect; the returned label is discarded so no phantom empty clause reaches
+    any surface (the number never becomes ``paragraph.text``). A blank paragraph with
+    no numbering is a no-op.
+
+    The counter is keyed per ``(numId, ilvl)`` (see ``numbering_state``), so advancing
+    an empty item on one list never disturbs an unrelated list's sequence -- e.g. a
+    document with 14 clauses numbered 1-14 on one list plus 4 empty items on another
+    list keeps its 1-14 contiguous."""
+    ppr = paragraph.find(f"{WORD_NS}pPr")
+    style_id = _paragraph_style_id(ppr)
+    style = styles.get(style_id or "", {})
+    paragraph_numbering = _paragraph_numbering(ppr, style)
+    if not paragraph_numbering:
+        return
+    _numbering_record(paragraph_numbering, numbering, numbering_state)
+
+
 def _table_cell_style(cell: ET.Element) -> Dict[str, object]:
     tcpr = cell.find(f"{WORD_NS}tcPr")
     if tcpr is None:
@@ -624,28 +669,70 @@ def _read_numbering(document: ZipFile) -> NumberingDefinitions:
             level_index = _int_or_none(_attr(level, "ilvl"))
             if level_index is None:
                 continue
-            level_record: Dict[str, object] = {
-                "start": _int_or_none(_val(level.find(f"{WORD_NS}start"))) or 1,
-                "format": _val(level.find(f"{WORD_NS}numFmt")) or "decimal",
-                "text": _val(level.find(f"{WORD_NS}lvlText")) or f"%{level_index + 1}.",
-            }
-            # Capture the level's left indent (twips) so a paragraph that numbers
-            # at this level but carries no direct ``<w:ind>`` can still resolve its
-            # effective indentation from the numbering definition.
-            indent_left = _indent_left_twips(level.find(f"{WORD_NS}pPr"))
-            if indent_left is not None:
-                level_record["indent_left"] = indent_left
-            levels[level_index] = level_record
+            levels[level_index] = _read_level_definition(level, level_index)
         abstract[abstract_id] = levels
 
     nums: Dict[str, str] = {}
+    # ``<w:lvlOverride>`` restarts / re-defines a level for ONE ``<w:num>`` instance
+    # (restart-at-N lists, per-instance numFmt/lvlText). Keyed numId -> ilvl ->
+    # {"start_override": int?, "level": {...}?} so ``_numbering_record`` can layer the
+    # override on top of the shared abstract definition instead of ignoring it (D11).
+    overrides: Dict[str, Dict[int, Dict[str, object]]] = {}
     for num in root.findall(f"{WORD_NS}num"):
         num_id = _attr(num, "numId")
         abstract_id = _val(num.find(f"{WORD_NS}abstractNumId"))
-        if num_id and abstract_id:
-            nums[num_id] = abstract_id
+        if not (num_id and abstract_id):
+            continue
+        nums[num_id] = abstract_id
+        num_overrides = _read_level_overrides(num)
+        if num_overrides:
+            overrides[num_id] = num_overrides
 
-    return {"abstract": abstract, "nums": nums}
+    return {"abstract": abstract, "nums": nums, "overrides": overrides}
+
+
+def _read_level_definition(level: ET.Element, level_index: int) -> Dict[str, object]:
+    """Parse a ``<w:lvl>`` into the level record the numbering counter consumes.
+
+    Shared by the abstract-numbering reader and the per-instance ``<w:lvlOverride>``
+    reader (D11) so an override carrying a full ``<w:lvl>`` is parsed identically to
+    the abstract level it replaces. Also captures the level's left indent (twips) so
+    a paragraph that numbers at this level but carries no direct ``<w:ind>`` can
+    still resolve its effective indentation from the numbering definition."""
+    record: Dict[str, object] = {
+        "start": _int_or_none(_val(level.find(f"{WORD_NS}start"))) or 1,
+        "format": _val(level.find(f"{WORD_NS}numFmt")) or "decimal",
+        "text": _val(level.find(f"{WORD_NS}lvlText")) or f"%{level_index + 1}.",
+    }
+    indent_left = _indent_left_twips(level.find(f"{WORD_NS}pPr"))
+    if indent_left is not None:
+        record["indent_left"] = indent_left
+    return record
+
+
+def _read_level_overrides(num: ET.Element) -> Dict[int, Dict[str, object]]:
+    """Read the ``<w:lvlOverride>`` entries of one ``<w:num>`` instance (D11).
+
+    Each override targets a level (``w:ilvl``) and may carry a ``<w:startOverride>``
+    (restart that level's counter at N for this instance) and/or a full ``<w:lvl>``
+    that re-defines the level (numFmt/lvlText/start) for this instance only. Returns
+    ilvl -> {"start_override": int?, "level": {...}?}; empty overrides are dropped so
+    the map stays sparse and the no-override path is untouched."""
+    overrides: Dict[int, Dict[str, object]] = {}
+    for override in num.findall(f"{WORD_NS}lvlOverride"):
+        level_index = _int_or_none(_attr(override, "ilvl"))
+        if level_index is None:
+            continue
+        record: Dict[str, object] = {}
+        start_override = _int_or_none(_val(override.find(f"{WORD_NS}startOverride")))
+        if start_override is not None:
+            record["start_override"] = start_override
+        level = override.find(f"{WORD_NS}lvl")
+        if level is not None:
+            record["level"] = _read_level_definition(level, level_index)
+        if record:
+            overrides[level_index] = record
+    return overrides
 
 
 def _paragraph_style_id(ppr: ET.Element | None) -> str | None:
@@ -745,16 +832,45 @@ def _numbering_record(
     numbering: NumberingDefinitions,
     numbering_state: Dict[str, Dict[int, int]],
 ) -> Dict[str, object] | None:
+    """Compute a paragraph's Word-canonical autonumber (value + rendered label).
+
+    NUMBERING RECONCILIATION RULE (D13) -- the single source both display surfaces
+    resolve against:
+
+      * The ``label`` this returns is what the RECONSTRUCTION surface paints via the
+        ``data-structure-label`` attribute + a CSS ``::before`` (see
+        ``redline-rendering.paragraphStructureAttributes``); it is NEVER emitted as a
+        text node, so a numbering change here can never alter ``paragraph.text`` or
+        the outbound redline.
+      * The FAITHFUL surface (``docx-faithful-render.js`` -> the vendored docx-preview
+        library) computes numbering itself, directly from ``word/numbering.xml``, and
+        is authoritative for what Word actually prints.
+
+    The two agree ONLY if this function reproduces Word's counting rules. So this is
+    where the reconciliation lives: empty numbered paragraphs advance the counter
+    (D10, via ``_advance_numbering_for_empty_paragraph``), ``<w:lvlOverride>`` /
+    ``<w:startOverride>`` restarts are honored (D11, via
+    ``_effective_numbering_levels``), and custom ``lvlText`` templates render into the
+    label verbatim. docx-preview is not modified; instead OUR engine is made
+    Word-canonical so both surfaces show the same number for the same clause."""
     if not paragraph_numbering:
         return None
     num_id = str(paragraph_numbering.get("num_id") or "")
     level_index = int(paragraph_numbering.get("level") or 0)
     nums = numbering.get("nums") if isinstance(numbering, dict) else {}
     abstract = numbering.get("abstract") if isinstance(numbering, dict) else {}
+    overrides = numbering.get("overrides") if isinstance(numbering, dict) else {}
     abstract_id = nums.get(num_id) if isinstance(nums, dict) else None
     levels = abstract.get(abstract_id) if isinstance(abstract, dict) and abstract_id is not None else None
-    level_definition = levels.get(level_index) if isinstance(levels, dict) else None
-    if not isinstance(level_definition, dict):
+    num_overrides = overrides.get(num_id) if isinstance(overrides, dict) else None
+
+    # Layer any per-instance ``<w:lvlOverride>`` (restart-at-N / re-defined level) on
+    # top of the shared abstract levels so BOTH the counter and the rendered label
+    # honor the override. With no overrides this is the abstract levels verbatim, so
+    # the common path is unchanged (D11).
+    effective_levels = _effective_numbering_levels(levels, num_overrides)
+    level_definition = effective_levels.get(level_index)
+    if not isinstance(level_definition, dict) or not level_definition:
         return {
             "num_id": num_id,
             "level": level_index,
@@ -764,16 +880,19 @@ def _numbering_record(
     for tracked_level in list(counters):
         if tracked_level > level_index:
             del counters[tracked_level]
+    # ``start`` carries any ``<w:startOverride>`` (folded in by
+    # ``_effective_numbering_levels``), so the first use of this level in this num
+    # instance restarts at the overridden value and increments normally after (D11).
     start = int(level_definition.get("start") or 1)
     counters[level_index] = counters.get(level_index, start - 1) + 1
     for parent_level in range(level_index):
         if parent_level not in counters:
-            parent_definition = levels.get(parent_level, {}) if isinstance(levels, dict) else {}
+            parent_definition = effective_levels.get(parent_level, {})
             counters[parent_level] = int(parent_definition.get("start") or 1)
 
     number_format = str(level_definition.get("format") or "decimal")
     level_text = str(level_definition.get("text") or f"%{level_index + 1}.")
-    label = _render_numbering_label(level_text, counters, levels if isinstance(levels, dict) else {})
+    label = _render_numbering_label(level_text, counters, effective_levels)
     return {
         "num_id": num_id,
         "level": level_index,
@@ -782,6 +901,39 @@ def _numbering_record(
         "value": counters[level_index],
         "label": label,
     }
+
+
+def _effective_numbering_levels(
+    levels: Dict[int, Dict[str, object]] | None,
+    num_overrides: Dict[int, Dict[str, object]] | None,
+) -> Dict[int, Dict[str, object]]:
+    """Merge a ``<w:num>`` instance's ``<w:lvlOverride>`` entries onto its abstract levels.
+
+    A ``<w:startOverride>`` replaces the level's ``start`` (so the counter restarts
+    at N for this instance); a full ``<w:lvl>`` inside the override replaces the
+    level's format/text/start wholesale. Levels with neither an abstract definition
+    nor an override are absent. With ``num_overrides`` empty/None the result is a
+    faithful copy of ``levels`` so the no-override path behaves exactly as before (D11)."""
+    merged: Dict[int, Dict[str, object]] = {}
+    indices: set[int] = set()
+    if isinstance(levels, dict):
+        indices.update(levels.keys())
+    if isinstance(num_overrides, dict):
+        indices.update(num_overrides.keys())
+    for index in indices:
+        base = levels.get(index) if isinstance(levels, dict) else None
+        record: Dict[str, object] = dict(base) if isinstance(base, dict) else {}
+        override = num_overrides.get(index) if isinstance(num_overrides, dict) else None
+        if isinstance(override, dict):
+            override_level = override.get("level")
+            if isinstance(override_level, dict):
+                record.update(override_level)
+            start_override = override.get("start_override")
+            if isinstance(start_override, int):
+                record["start"] = start_override
+        if record:
+            merged[index] = record
+    return merged
 
 
 def _render_numbering_label(level_text: str, counters: Dict[int, int], levels: Dict[int, Dict[str, object]]) -> str:
