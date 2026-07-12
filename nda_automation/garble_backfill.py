@@ -108,6 +108,14 @@ GARBLE_EXPLODED_ALONE_MIN = 2
 GARBLE_BACKFILL_DEFAULT_LIMIT = 50
 GARBLE_BACKFILL_MAX_LIMIT = 200
 
+# Characters of the reflowed healed text surfaced on a ``would_heal`` MEASURE entry
+# so an operator can EYEBALL reading order + word spacing on the real corpus BEFORE
+# firing the persist (the human-verification gate the retrospective-backfill plan
+# requires). Whitespace is deliberately NOT collapsed in the sample: a dropped
+# inter-word space (the exact defect the readability backstop guards) must stay
+# visible to the human reviewer.
+GARBLE_HEAL_SAMPLE_CHARS = 280
+
 
 def stored_paragraph_blocks(extracted_text: object) -> list[str]:
     """The stored paragraph texts, recovered from the canonical serialization.
@@ -334,6 +342,18 @@ def _reflow_healed_text_is_readable(new_text: str) -> bool:
     return not pdf_text.text_has_implausible_megaword(new_text)
 
 
+def _text_sample(text: str) -> str:
+    """First ``GARBLE_HEAL_SAMPLE_CHARS`` chars of ``text``, RAW (whitespace
+    preserved, so a dropped inter-word space stays visible), truncated with a
+    trailing ellipsis marker. Used only for the human-eyeball MEASURE sample —
+    never for a write or a comparison."""
+    full = str(text or "")
+    sample = full[:GARBLE_HEAL_SAMPLE_CHARS]
+    if len(full) > GARBLE_HEAL_SAMPLE_CHARS:
+        sample += "…"
+    return sample
+
+
 def _measure_matter(
     matter: dict[str, Any], entry: dict[str, Any], *, shard_rejoin: bool
 ) -> None:
@@ -362,6 +382,14 @@ def _measure_matter(
         # HONEST size of what a persisting run would actually write — not the old
         # over-estimate that counted a fused/garbled re-extraction as a heal.
         entry["action"] = "would_heal"
+        # HUMAN-EYEBALL SAMPLES (measure-only, NO write): a short before/after
+        # snippet so an operator can verify reading order + word spacing on the
+        # real corpus BEFORE firing the persist — the manual-verification gate the
+        # retrospective-backfill plan requires. ``healed_sample`` is the reflowed
+        # text a persisting run would write; ``garbled_sample`` is the stored text
+        # it would replace, for side-by-side comparison. Both raw-truncated.
+        entry["healed_sample"] = _text_sample(new_text)
+        entry["garbled_sample"] = _text_sample(old_text)
     else:
         entry["action"] = "measure_still_garbled"
 
