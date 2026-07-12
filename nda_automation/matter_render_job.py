@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,25 @@ from . import artifact_registry, document_rendering
 from .matter_repository import DiskMatterRepository, MatterRepository, MatterRepositoryError
 
 DEFAULT_RENDER_STATUS_POLL_GRACE_SECONDS = 5.0
+
+# Phase 2 async render. When enabled, the byte-serving render GETs
+# (/render-pdf, /render-page/{n}) NO LONGER run the (slow) soffice/rasterize
+# pipeline inline on the HTTP request thread. Instead they serve a warm cache
+# hit immediately, or -- on a cache miss -- schedule the render in the shared
+# background coordinator (the same one /render-status already drives) and shed
+# the request with 503 + Retry-After so the web thread is freed. The FE already
+# polls /render-status (with capped re-polling) and only fetches the bytes once
+# the status reports ready, at which point the byte GET is a warm-cache hit.
+#
+# Default OFF: byte-identical to the historical inline behavior. This flag gates
+# a change to the CORE render request model, so it must never alter behavior
+# when unset.
+ASYNC_RENDER_ENV = "NDA_ASYNC_RENDER"
+
+
+def async_render_enabled() -> bool:
+    """True when NDA_ASYNC_RENDER selects the off-thread byte-serving render path."""
+    return os.environ.get(ASYNC_RENDER_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class MatterRenderJobError(RuntimeError):
@@ -110,12 +130,14 @@ def render_pdf_file(
     *,
     owner_user_id: str = "",
     repository: MatterRepository | None = None,
+    cache_dir: Path | None = None,
 ) -> MatterRenderFile:
-    result = render_matter_document(
+    result = _rendered_document_for_serving(
         matter_id,
         owner_user_id=owner_user_id,
         include_page_images=False,
         repository=repository,
+        cache_dir=cache_dir,
     )
     rendered = result.rendered
     if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
@@ -136,8 +158,15 @@ def render_page_image_file(
     *,
     owner_user_id: str = "",
     repository: MatterRepository | None = None,
+    cache_dir: Path | None = None,
 ) -> MatterRenderFile:
-    result = render_matter_document(matter_id, owner_user_id=owner_user_id, repository=repository)
+    result = _rendered_document_for_serving(
+        matter_id,
+        owner_user_id=owner_user_id,
+        include_page_images=True,
+        repository=repository,
+        cache_dir=cache_dir,
+    )
     rendered = result.rendered
     if rendered.status != document_rendering.READY_STATUS or rendered.pdf_path is None:
         error = rendered.error_message or "Rendered PDF is not available for this matter."
@@ -231,6 +260,7 @@ def render_matter_document(
     owner_user_id: str = "",
     include_page_images: bool = True,
     repository: MatterRepository | None = None,
+    cache_dir: Path | None = None,
 ) -> MatterRenderedDocument:
     resolved = resolve_matter_source(matter_id, owner_user_id=owner_user_id, repository=repository)
     try:
@@ -240,6 +270,7 @@ def render_matter_document(
             content_type=source_document_content_type(resolved.source_filename),
             owner_user_id=resolved.owner_user_id,
             include_page_images=include_page_images,
+            cache_dir=cache_dir,
         )
     except document_rendering.DocxConverterBusy as error:
         raise MatterRenderJobError(
@@ -248,6 +279,94 @@ def render_matter_document(
             headers={"Retry-After": "5"},
         ) from error
     return MatterRenderedDocument(matter=resolved.matter, render_result=render_result)
+
+
+def _rendered_document_for_serving(
+    matter_id: str | None,
+    *,
+    owner_user_id: str = "",
+    include_page_images: bool = True,
+    repository: MatterRepository | None = None,
+    cache_dir: Path | None = None,
+) -> MatterRenderedDocument:
+    """Obtain the rendered document a byte-serving GET needs.
+
+    Flag OFF (default): identical to ``render_matter_document`` -- the render runs
+    INLINE on the caller's thread (byte-identical to the historical behavior).
+
+    Flag ON (``NDA_ASYNC_RENDER``): the slow soffice/rasterize pipeline never runs
+    on this thread. A warm cache hit is returned immediately; a cache miss
+    schedules the render in the shared background coordinator and sheds the
+    request with 503 + Retry-After (see ``_peek_or_schedule_render``).
+    """
+    if not async_render_enabled():
+        return render_matter_document(
+            matter_id,
+            owner_user_id=owner_user_id,
+            include_page_images=include_page_images,
+            repository=repository,
+            cache_dir=cache_dir,
+        )
+    resolved = resolve_matter_source(matter_id, owner_user_id=owner_user_id, repository=repository)
+    render_result = _peek_or_schedule_render(
+        resolved,
+        matter_id or "",
+        include_page_images=include_page_images,
+        cache_dir=cache_dir,
+    )
+    return MatterRenderedDocument(matter=resolved.matter, render_result=render_result)
+
+
+def _peek_or_schedule_render(
+    resolved: MatterRenderSource,
+    matter_id: str,
+    *,
+    include_page_images: bool,
+    cache_dir: Path | None = None,
+) -> document_rendering.DocumentRenderResult:
+    """Return a warm cached render, or schedule a background render and shed (503).
+
+    Never runs the (slow) convert/rasterize on the caller's thread:
+
+    * A ready cache entry is returned immediately (read-only peek).
+    * On a miss, a single background render is ensured for this matter (the same
+      per-matter de-duped coordinator, on-disk cache, and concurrency semaphores
+      that /render-status already uses) and a ``MatterRenderJobError`` with status
+      503 + ``Retry-After`` is raised so the web thread is freed. The FE re-polls
+      /render-status and re-fetches the bytes once the status reports ready.
+
+    The background render always includes page images so a later /render-status
+    peek (which requires the page manifest) becomes a hit, matching the status
+    endpoint's readiness contract.
+    """
+    content_type = source_document_content_type(resolved.source_filename)
+    cached = document_rendering.peek_source_document_render_result(
+        resolved.source_bytes,
+        source_filename=resolved.source_filename,
+        content_type=content_type,
+        cache_dir=cache_dir,
+        owner_user_id=resolved.owner_user_id,
+        include_page_images=include_page_images,
+    )
+    if cached is not None:
+        return cached
+    document_rendering.ensure_source_document_render_in_flight(
+        matter_id,
+        resolved.source_bytes,
+        source_filename=resolved.source_filename,
+        content_type=content_type,
+        cache_dir=cache_dir,
+        owner_user_id=resolved.owner_user_id,
+        include_page_images=True,
+    )
+    raise MatterRenderJobError(
+        {
+            "error": "Document render is in progress.",
+            "document_render": rendering_in_progress_payload(matter_id, resolved.source_filename),
+        },
+        status=503,
+        headers={"Retry-After": "5"},
+    )
 
 
 def source_document_content_type(source_filename: str | Path) -> str:
