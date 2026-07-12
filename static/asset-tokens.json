@@ -104,8 +104,8 @@
     "v": "20260621wave3"
   },
   "js/generator-editor.js": {
-    "sha256": "76e5e74bc4760edad5cf36922749fcdc5418daf1cae72a4e2c1dabe7194cbba9",
-    "v": "20260626editordur1"
+    "sha256": "83cc51a6cd2fd3ad8a7d9bce567ea6201353a5eacd9599d693942a812331523b",
+    "v": "20260712r3"
   },
   "js/manual-upload.js": {
     "sha256": "2fb30c32ab5d353553a82f2d6fbc75b93ae62a31fc8d230e82b0880e48fe33a5",
@@ -232,8 +232,8 @@
     "v": "20260706warn1"
   },
   "js/redline-rendering.js": {
-    "sha256": "9422b729e5522b7494937881be06482277bec20bd9731d803e3cf50c662633da",
-    "v": "20260711parkedall"
+    "sha256": "e0f4ed18cbf2e434b6a5864a17fb200ae60864f73c57140d773112fb10c5c480",
+    "v": "20260712r3"
   },
   "js/repository-actions.js": {
     "sha256": "74d1eef529a69b833ae3786caf8056510ce939cacb07cc7cb516c39d8e3d2872",
@@ -296,7 +296,7 @@
     "v": "20260709clobber1"
   },
   "styles.css": {
-    "sha256": "7c051b14800d217a444be18c5d83c0d3fbb4b373c0302d629699ee0519adeb5b",
-    "v": "20260711phaseb"
+    "sha256": "28174c7cb0c65339cc9a89155b2e76c4e9b89385825b72c49043682c0ec5b082",
+    "v": "20260712r3"
   }
 }
