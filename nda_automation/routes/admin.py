@@ -1042,18 +1042,33 @@ def handle_matters_garble_backfill(handler) -> None:
 
 
 def handle_matters_garble_backfill_start(handler) -> None:
-    """POST /api/admin/matters/garble-backfill/start — kick the EXECUTE run.
+    """POST /api/admin/matters/garble-backfill/start — kick a background heal run.
 
     Runs the heal loop on ONE background daemon thread (mirrors
     ``handle_pdf_docx_backfill_start``): the request returns 202 immediately and
-    the GET status route serves progress + the final report. Body:
-    ``{"confirm": must be exactly true, "limit": 1..200 default 50}`` — a
-    missing/mistyped confirm is a 400 and nothing starts. 409 when a run is
+    the GET status route serves progress + the final report. 409 when a run is
     already in flight (at most one at a time; it is serial by design).
     Admin-gated; CSRF enforced by do_POST before dispatch. The run itself never
     touches reviews/redlines/decisions, never calls AI, and never writes an
     approved/executed matter (excluded at scan, pre-write re-check, AND an
     in-store-lock veto).
+
+    Two run modes, both keyed off the body — a missing/mistyped ``confirm`` is a
+    400 and nothing starts in either:
+
+    * DEFAULT EXECUTE (reflow-free) — body ``{"confirm": exactly true,
+      "limit": 1..200 default 50}``. The proven per-glyph heal; the shard-fragment
+      reflow stays OFF.
+    * SHARD HEAL-PERSIST (opt-in) — body ``{"confirm": exactly true,
+      "persist_shard_rejoin": exactly true, "limit": 1..200 default 50}``. The
+      ONLY HTTP surface that lets a reflow-on re-extraction actually WRITE. It is
+      reachable ONLY with BOTH flags: without ``confirm`` nothing starts (400);
+      with ``confirm`` but WITHOUT ``persist_shard_rejoin`` this is the plain
+      reflow-free execute above, never the persist. The persist itself is DOUBLY
+      gated + readability-gated + executed/approved-excluded downstream
+      (``run_garble_backfill(persist_shard_rejoin=True)`` -> ``_heal_matter``'s
+      readability backstop), and stays a background run for the same GIL-heavy
+      pypdf-CPU reason as every other execute path.
     """
     if not require_admin(handler):
         return
@@ -1065,15 +1080,62 @@ def handle_matters_garble_backfill_start(handler) -> None:
 
     if payload.get("confirm") is not True:
         # Execute demands an EXPLICIT boolean confirm — a missing/truthy-string
-        # confirm never starts a mutating run.
+        # confirm never starts a mutating run (either mode).
         handler._send_json(
             {"error": 'Executing the garble backfill requires "confirm": true.'},
             status=400,
         )
         return
 
+    # SHARD HEAL-PERSIST opt-in (default OFF): must be an EXPLICIT boolean true to
+    # arm the persisting reflow path; absent/false leaves the plain reflow-free
+    # execute path below entirely unchanged. A non-bool is a 400 (mirrors the
+    # dry-run endpoint's shard_rejoin validation) so a truthy string can never
+    # arm a persisting write.
+    persist_shard_rejoin = payload.get("persist_shard_rejoin", False)
+    if not isinstance(persist_shard_rejoin, bool):
+        handler._send_json(
+            {"error": "persist_shard_rejoin must be true or false."},
+            status=400,
+        )
+        return
+
     limit = _garble_backfill_limit(handler, payload)
     if limit is None:
+        return
+
+    if persist_shard_rejoin:
+        # Confirm-gated (above) AND persist-flagged: arm the reflow-on PERSIST run.
+        # start_garble_backfill_async pairs persist with shard_rejoin=True; the
+        # service's structural guards + _heal_matter's readability backstop enforce
+        # the doubly-gated write. Background run; poll the status route.
+        telemetry.increment("garble_backfill_persist_requests")
+        result = garble_backfill.start_garble_backfill_async(
+            limit=limit, shard_rejoin=True, persist_shard_rejoin=True
+        )
+        if result.get("already_running"):
+            handler._send_json(
+                {
+                    "error": "A garble backfill run is already in flight.",
+                    "already_running": True,
+                    "run_id": result.get("run_id", ""),
+                    "status": garble_backfill.garble_backfill_status(),
+                },
+                status=409,
+            )
+            return
+        handler._send_json(
+            {
+                "started": True,
+                "already_running": False,
+                "persist_shard_rejoin": True,
+                "shard_rejoin": True,
+                "run_id": result.get("run_id", ""),
+                "poll": "/api/admin/matters/garble-backfill/status",
+                "status": garble_backfill.garble_backfill_status(),
+            },
+            status=202,
+        )
         return
 
     telemetry.increment("garble_backfill_execute_requests")
