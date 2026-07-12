@@ -1367,3 +1367,180 @@ def test_persist_shard_rejoin_still_excludes_executed_or_approved(_isolated_stor
     assert by_id[protected["id"]]["action"] == "excluded_executed"
     assert by_id[healable["id"]]["action"] == "healed"
     assert (matter_store._matter_records_dir() / f"{protected['id']}.json").read_bytes() == protected_before
+
+
+# --- SHARD heal-PERSIST HTTP route (confirm + persist_shard_rejoin) -----------
+def _persist(payload=None, *, user=ADMIN_USER):
+    """Drive the SHARD HEAL-PERSIST path end to end: POST .../start with BOTH
+    confirm:true and persist_shard_rejoin:true (the daemon thread runs inline via
+    the autouse fixture), then return (start_handler, final report from the status
+    snapshot — None when the run never started)."""
+    handler = _FakeHandler(
+        user=user,
+        payload={"confirm": True, "persist_shard_rejoin": True, **(payload or {})},
+        path="/api/admin/matters/garble-backfill/start",
+    )
+    admin_routes.handle_matters_garble_backfill_start(handler)
+    status = garble_backfill.garble_backfill_status()
+    report = status.get("report") if isinstance(status, dict) else None
+    return handler, report
+
+
+def test_persist_route_heals_and_persists_shard_matter(_isolated_store):
+    """POST .../start with confirm + persist_shard_rejoin runs the doubly-gated
+    persist path on the background thread (inline here) and WRITES the healed text.
+    The response is a 202 carrying the persist markers + run_id + poll pointer."""
+    matter = _shard_garbled_matter()
+    handler, report = _persist()
+    assert handler.status == 202
+    assert handler.response["started"] is True
+    assert handler.response["persist_shard_rejoin"] is True
+    assert handler.response["shard_rejoin"] is True
+    assert handler.response["poll"] == "/api/admin/matters/garble-backfill/status"
+    assert handler.response["run_id"].startswith("garble-persist-")
+    # The persist path actually ran and healed for real.
+    assert report is not None
+    assert report["persist_shard_rejoin"] is True
+    assert report["healed"] == 1
+    fresh = matter_store.get_matter(matter["id"], owner_user_id="")
+    blocks = garble_backfill.stored_paragraph_blocks(fresh["extracted_text"])
+    assert garble_backfill.garble_fingerprint(blocks)["garbled"] is False
+    assert fresh["extracted_text"] != SHARD_TEXT
+    assert not pdf_text.text_has_implausible_megaword(fresh["extracted_text"])
+
+
+def test_persist_route_refuses_without_confirm(_isolated_store):
+    """Without confirm:true the persist run never starts (400) — even WITH the
+    persist flag set. Nothing starts, nothing written."""
+    matter = _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    handler = _FakeHandler(
+        payload={"persist_shard_rejoin": True},
+        path="/api/admin/matters/garble-backfill/start",
+    )
+    admin_routes.handle_matters_garble_backfill_start(handler)
+    assert handler.status == 400
+    assert "confirm" in handler.response["error"]
+    assert garble_backfill.garble_backfill_status() == {}
+    assert _store_snapshot(_isolated_store) == before
+    assert matter_store.get_matter(matter["id"], owner_user_id="")["extracted_text"] == SHARD_TEXT
+
+
+def test_confirm_without_persist_flag_is_the_reflow_free_execute_not_persist(_isolated_store):
+    """confirm:true WITHOUT persist_shard_rejoin is the proven REFLOW-FREE execute:
+    it runs but heals NO shards (the reflow stays off), so the shard record stands.
+    The persist path is UNREACHABLE without the explicit persist flag."""
+    matter = _shard_garbled_matter()
+    handler, report = _execute()  # {"confirm": True}, no persist flag
+    assert handler.status == 202
+    # The plain-execute response carries NO persist marker, and the report shows
+    # the persist opt-in was OFF.
+    assert "persist_shard_rejoin" not in handler.response
+    assert report["persist_shard_rejoin"] is False
+    assert report["healed"] == 0
+    assert handler.response["run_id"].startswith("garble-backfill-")
+    # The shard matter is untouched: a reflow-free execute cannot heal a shard.
+    assert matter_store.get_matter(matter["id"], owner_user_id="")["extracted_text"] == SHARD_TEXT
+
+
+def test_persist_flag_must_be_boolean(_isolated_store):
+    """A non-bool persist_shard_rejoin is a 400 (mirrors shard_rejoin validation) so
+    a truthy string can never arm a persisting write. Nothing starts, nothing written."""
+    matter = _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    handler = _FakeHandler(
+        payload={"confirm": True, "persist_shard_rejoin": "yes"},
+        path="/api/admin/matters/garble-backfill/start",
+    )
+    admin_routes.handle_matters_garble_backfill_start(handler)
+    assert handler.status == 400
+    assert "persist_shard_rejoin" in handler.response["error"]
+    assert garble_backfill.garble_backfill_status() == {}
+    assert _store_snapshot(_isolated_store) == before
+    assert matter_store.get_matter(matter["id"], owner_user_id="")["extracted_text"] == SHARD_TEXT
+
+
+def test_persist_route_is_admin_only(_isolated_store):
+    """A non-admin caller is 403 on the persist route; nothing starts, nothing written."""
+    matter = _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    handler, report = _persist(user=NON_ADMIN_USER)
+    assert handler.status == 403
+    assert report is None
+    assert _store_snapshot(_isolated_store) == before
+    assert matter_store.get_matter(matter["id"], owner_user_id="")["extracted_text"] == SHARD_TEXT
+
+
+def test_persist_route_still_excludes_executed_or_approved(_isolated_store):
+    """The executed/approved exclusion holds through the HTTP persist route too: a
+    protected shard matter is listed but never written, an unprotected one heals."""
+    protected = _shard_garbled_matter(
+        status="approved", approver="counsel@example.com", approved_at="2026-06-20T00:00:00+00:00"
+    )
+    healable = _shard_garbled_matter()
+    protected_before = (matter_store._matter_records_dir() / f"{protected['id']}.json").read_bytes()
+
+    handler, report = _persist()
+    assert handler.status == 202
+    assert report["excluded_executed"] == 1
+    assert report["healed"] == 1
+    by_id = {entry["id"]: entry for entry in report["matters"]}
+    assert by_id[protected["id"]]["action"] == "excluded_executed"
+    assert by_id[healable["id"]]["action"] == "healed"
+    # The protected record is byte-identical.
+    assert (matter_store._matter_records_dir() / f"{protected['id']}.json").read_bytes() == protected_before
+
+
+# --- MEASURE report healed-text samples (human-eyeball gate; writes NOTHING) ---
+def test_measure_report_carries_healed_text_samples_and_writes_nothing(_isolated_store):
+    """The MEASURE pass attaches a before/after text sample to each would_heal
+    entry so an operator can eyeball reading order + word spacing BEFORE firing the
+    persist — and still writes nothing."""
+    _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    report = garble_backfill.run_garble_backfill(
+        dry_run=True, measure_only=True, shard_rejoin=True
+    )
+    assert report["would_heal"] == 1
+    entry = next(m for m in report["matters"] if m.get("action") == "would_heal")
+    # A healed sample rides the entry: present, non-empty, bounded (+1 for ellipsis).
+    healed_sample = entry["healed_sample"]
+    assert healed_sample
+    assert len(healed_sample) <= garble_backfill.GARBLE_HEAL_SAMPLE_CHARS + 1
+    # The before sample is the stored garbled text the persist would replace.
+    assert entry["garbled_sample"] == garble_backfill._text_sample(SHARD_TEXT)
+    # Before/after genuinely differ: the sample shows the heal, not the garble.
+    assert healed_sample != entry["garbled_sample"]
+    # The full would-heal is readable (existing fingerprint_after contract).
+    assert entry["fingerprint_after"]["garbled"] is False
+    # Measure-only: NOTHING written.
+    assert _store_snapshot(_isolated_store) == before
+
+
+def test_measure_samples_absent_on_non_would_heal_entries(_isolated_store):
+    """Samples ride ONLY on would_heal entries: a measure pass that does not heal
+    (reflow OFF -> shards reproduced) carries no healed/garbled sample."""
+    _shard_garbled_matter()
+    report = garble_backfill.run_garble_backfill(
+        dry_run=True, measure_only=True, shard_rejoin=False
+    )
+    assert report["would_heal"] == 0
+    for entry in report["matters"]:
+        assert entry.get("action") != "would_heal"
+        assert "healed_sample" not in entry
+        assert "garbled_sample" not in entry
+
+
+def test_measure_endpoint_report_carries_healed_samples(_isolated_store):
+    """The operator's actual MEASURE surface (POST .../garble-backfill with
+    shard_rejoin:true -> background measure -> status report) carries the healed
+    samples, and still writes nothing."""
+    _shard_garbled_matter()
+    before = _store_snapshot(_isolated_store)
+    handler = _run({"shard_rejoin": True})
+    assert handler.status == 202
+    report = garble_backfill.garble_backfill_status()["report"]
+    entry = next(m for m in report["matters"] if m.get("action") == "would_heal")
+    assert entry["healed_sample"]
+    assert entry["garbled_sample"]
+    assert _store_snapshot(_isolated_store) == before
