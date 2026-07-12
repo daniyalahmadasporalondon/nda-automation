@@ -5210,6 +5210,26 @@ h3 {
   background: rgba(85, 35, 178, 0.05);
 }
 
+/* Merged / nested editable table. Reuses the .studio-doc-table grid above, but
+   every cell carries an inline grid-column / grid-row span (see
+   renderMergedTableGrid) so a horizontal merge (w:gridSpan) widens the cell and
+   an ARBITRARY vertical merge (w:vMerge) is placed by explicit grid line rather
+   than riding auto-flow (which cannot express rowspan). The vMerge continuation
+   cell is folded away upstream, so a merged column leaves NO empty stray cell.
+   align-items:stretch so a rowspan cell fills the rows it spans. */
+.studio-document-render:not(.generator-document-render) .studio-doc-table--spanned {
+  align-items: stretch;
+}
+
+/* A table nested inside a cell (a <w:tbl> inside a <w:tc>) renders as its own
+   grid INSIDE the parent cell's column, in document order; give it room from any
+   cell text above and drop the outer bottom margin so it hugs its cell, not the
+   page. */
+.studio-document-render:not(.generator-document-render)
+  .studio-doc-table-cell .studio-doc-table {
+  margin: 8px 0 0;
+}
+
 .inline-del,
 .inline-ins {
   border-radius: 4px;

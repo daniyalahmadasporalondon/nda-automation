@@ -86,32 +86,42 @@ function redlineFormatParagraphAction() {
 }
 
 // Walks the flat paragraph list and wraps each run of consecutive table-cell
-// paragraphs (same table_index) into a presentational CSS grid so multi-cell
-// tables (e.g. signature blocks) render as side-by-side columns instead of a
-// flat vertical stack. Non-table paragraphs are emitted untouched. Every cell
-// paragraph is still rendered by `renderOne` -- it keeps its own
-// .studio-doc-paragraph frame, id and clause/redline/comment data-hooks (the
-// CSS comment at styles.css ~3935 explains why tables were left flat); we only
-// add a grid wrapper around the contiguous run, never nest or destroy frames.
+// paragraphs into a presentational CSS grid so multi-cell tables (e.g. signature
+// blocks) render as side-by-side columns instead of a flat vertical stack.
+// Non-table paragraphs are emitted untouched. Every cell paragraph is still
+// rendered by `renderOne` -- it keeps its own .studio-doc-paragraph frame, id and
+// clause/redline/comment data-hooks (the CSS comment at styles.css ~3935 explains
+// why tables were left flat); we only add a grid wrapper, never nest or destroy
+// frames.
+//
+// A run is grouped by the OUTERMOST (root) table_index (see tableMetaRootIndex),
+// so a table plus the nested tables interleaved inside its cells -- which share
+// the same root and are contiguous in document order -- form ONE run. A plain
+// grid (no gridSpan/vMerge/nesting) stays on the byte-identical legacy renderer
+// (renderReviewTable); a merged/nested run routes to the span-aware renderer.
 function renderReviewParagraphsWithTables(paragraphs, renderOne) {
   const out = [];
   let i = 0;
   while (i < paragraphs.length) {
-    const table = reviewTableMeta(paragraphs[i]);
-    if (!table) {
+    const meta = reviewTableMeta(paragraphs[i]);
+    if (!meta) {
       out.push(renderOne(paragraphs[i]));
       i += 1;
       continue;
     }
-    // Consume the whole table (all contiguous paragraphs sharing table_index).
-    const tableIndex = table.table_index;
+    // Consume the whole table: all contiguous paragraphs sharing the same root
+    // table_index (a nested table's cells resolve to their outermost parent).
+    const root = tableMetaRootIndex(meta);
     let j = i;
     while (j < paragraphs.length) {
-      const meta = reviewTableMeta(paragraphs[j]);
-      if (!meta || meta.table_index !== tableIndex) break;
+      const next = reviewTableMeta(paragraphs[j]);
+      if (!next || tableMetaRootIndex(next) !== root) break;
       j += 1;
     }
-    out.push(renderReviewTable(paragraphs.slice(i, j), renderOne));
+    const run = paragraphs.slice(i, j);
+    out.push(tableRunHasMergesOrNesting(run)
+      ? renderMergedReviewTable(run, renderOne)
+      : renderReviewTable(run, renderOne));
     i = j;
   }
   return out.join("");
@@ -148,6 +158,233 @@ function renderReviewTable(cellParagraphs, renderOne) {
     .map((cell) => `<div class="studio-doc-table-cell">${cell.html.join("")}</div>`)
     .join("");
   return `<div class="studio-doc-table" style="--studio-table-cols:${Math.max(columnCount, 1)}">${inner}</div>`;
+}
+
+// ---- Merged / nested table support (shared by Review + Generator grids) -----
+// The DOCX extractor already resolves w:gridSpan / w:vMerge / nested-<w:tbl>
+// geometry onto each cell paragraph's `paragraph.table` (docx_text.py) and the
+// FAITHFUL "Original" surface consumes it (source_fidelity.py +
+// renderSourceFidelityTable). The metadata therefore ALREADY reaches this
+// EDITABLE surface too -- both read the same `paragraph.table` -- it was simply
+// ignored here. These helpers add horizontal merges (col_span), vertical merges
+// (row_span, folding the vMerge "continue" cell away) and nested tables to the
+// editable grid, WITHOUT threading any new data. A plain grid never reaches this
+// path (renderReviewTable stays byte-identical), and every cell paragraph is
+// still rendered by the caller's `renderParagraph` so its id / editable hook /
+// round-trip to paragraph.text is untouched.
+
+// Root (outermost) table_index for a cell's table meta, following the nested
+// `parent` back-pointer chain (docx_text `_table_cell_parent_ref`). A top-level
+// cell's root is its own table_index; a cell inside a nested table resolves to
+// the OUTERMOST enclosing table. Lets the paragraph walker group a whole nested
+// structure (parent + the nested cells interleaved inside it, which share this
+// root and are contiguous in document order) into ONE table run.
+function tableMetaRootIndex(meta) {
+  if (!meta || typeof meta !== "object") return undefined;
+  let cursor = meta;
+  const guard = new Set();
+  while (cursor && typeof cursor.parent === "object" && cursor.parent && !guard.has(cursor)) {
+    guard.add(cursor);
+    cursor = cursor.parent;
+  }
+  return cursor ? cursor.table_index : undefined;
+}
+
+// True when a run of table-cell paragraphs carries ANY merged-cell geometry
+// (w:gridSpan colspan, w:vMerge rowspan / continuation) or nested tables (more
+// than one distinct table_index -- a <w:tbl> inside a <w:tc>). A plain grid
+// returns false so it stays on the byte-identical legacy renderReviewTable.
+function tableRunHasMergesOrNesting(run) {
+  if (!Array.isArray(run)) return false;
+  const tableIndices = new Set();
+  for (const paragraph of run) {
+    const meta = paragraph && paragraph.table;
+    if (!meta || typeof meta !== "object") continue;
+    if (Number(meta.col_span) > 1) return true;
+    if (Number(meta.row_span) > 1) return true;
+    if (String(meta.v_merge || "").trim().toLowerCase() === "continue") return true;
+    if (meta.parent && typeof meta.parent === "object") return true;
+    if (meta.table_index != null) tableIndices.add(meta.table_index);
+  }
+  return tableIndices.size > 1;
+}
+
+function tableMetaPositiveInt(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+// Normalize a nested cell's `parent` back-pointer into
+// {table_index,row_index,cell_index,parent} (recursing the full chain) or null.
+function tableMetaParentKey(parent) {
+  if (!parent || typeof parent !== "object") return null;
+  const tableIndex = tableMetaPositiveInt(parent.table_index);
+  const rowIndex = tableMetaPositiveInt(parent.row_index);
+  const cellIndex = tableMetaPositiveInt(parent.cell_index);
+  if (!tableIndex || !rowIndex || !cellIndex) return null;
+  return {
+    table_index: tableIndex,
+    row_index: rowIndex,
+    cell_index: cellIndex,
+    parent: tableMetaParentKey(parent.parent),
+  };
+}
+
+// Build an ordered, nesting-aware table model from a run of table-cell
+// paragraphs. Mirrors nda_automation/source_fidelity._source_blocks: a vMerge
+// "continue" cell is folded away (never its own cell), a nested table is placed
+// INSIDE its parent cell's items in document order, and each cell records its
+// col_span/row_span. Returns a flat list of top-level items:
+//   { kind: "paragraph", paragraph } | { kind: "table", model }
+// where `model` = { table_index, rows:[{ row_index, cells:[
+//   { cell_index, col_span, row_span, items:[...same item shape...] } ] }] }.
+function buildMergedTableModel(paragraphs) {
+  const cellItems = new Map(); // "ti:ri:ci" -> [item]
+  const cellMeta = new Map(); // "ti:ri:ci" -> { col_span, row_span }
+  const tableCellKeys = new Map(); // ti -> Set("ri:ci")
+  const topItems = [];
+  const placed = new Set();
+  const keyOf = (ti, ri, ci) => `${ti}:${ri}:${ci}`;
+  const ensureKeys = (ti) => {
+    if (!tableCellKeys.has(ti)) tableCellKeys.set(ti, new Set());
+    return tableCellKeys.get(ti);
+  };
+
+  // Register a table at the top level, or (when nested) inside its parent cell --
+  // ensuring the enclosing table/cell exist first so a table nested two or more
+  // levels deep resolves through the whole chain.
+  function placeTable(tableIndex, parent) {
+    if (placed.has(tableIndex)) return;
+    placed.add(tableIndex);
+    if (!parent) {
+      topItems.push({ kind: "table", tableIndex });
+      return;
+    }
+    placeTable(parent.table_index, parent.parent);
+    ensureKeys(parent.table_index).add(`${parent.row_index}:${parent.cell_index}`);
+    const parentKey = keyOf(parent.table_index, parent.row_index, parent.cell_index);
+    if (!cellItems.has(parentKey)) cellItems.set(parentKey, []);
+    cellItems.get(parentKey).push({ kind: "table", tableIndex });
+  }
+
+  paragraphs.forEach((paragraph) => {
+    const meta = paragraph && paragraph.table;
+    if (!meta || typeof meta !== "object") {
+      topItems.push({ kind: "paragraph", paragraph });
+      return;
+    }
+    const tableIndex = tableMetaPositiveInt(meta.table_index);
+    const rowIndex = tableMetaPositiveInt(meta.row_index);
+    const cellIndex = tableMetaPositiveInt(meta.cell_index);
+    if (!tableIndex || !rowIndex || !cellIndex) {
+      topItems.push({ kind: "paragraph", paragraph });
+      return;
+    }
+    // A vertical-merge continuation cell is folded into the restart cell's
+    // rowspan; it is never rendered as a cell of its own (matches the faithful
+    // surface). Its paragraph stays untouched in state, so the round-trip / export
+    // are unaffected.
+    if (String(meta.v_merge || "").trim().toLowerCase() === "continue") return;
+    placeTable(tableIndex, tableMetaParentKey(meta.parent));
+    const key = keyOf(tableIndex, rowIndex, cellIndex);
+    ensureKeys(tableIndex).add(`${rowIndex}:${cellIndex}`);
+    if (!cellMeta.has(key)) {
+      cellMeta.set(key, {
+        col_span: tableMetaPositiveInt(meta.col_span) || 1,
+        row_span: tableMetaPositiveInt(meta.row_span) || 1,
+      });
+    }
+    if (!cellItems.has(key)) cellItems.set(key, []);
+    cellItems.get(key).push({ kind: "paragraph", paragraph });
+  });
+
+  function buildTable(tableIndex) {
+    const keys = tableCellKeys.get(tableIndex) || new Set();
+    const parsed = [...keys].map((entry) => entry.split(":").map(Number)); // [ri, ci]
+    const rowIndices = [...new Set(parsed.map(([ri]) => ri))].sort((a, b) => a - b);
+    const rows = rowIndices.map((rowIndex) => {
+      const colIndices = [...new Set(
+        parsed.filter(([ri]) => ri === rowIndex).map(([, ci]) => ci),
+      )].sort((a, b) => a - b);
+      const cells = colIndices.map((cellIndex) => {
+        const key = keyOf(tableIndex, rowIndex, cellIndex);
+        const meta = cellMeta.get(key) || { col_span: 1, row_span: 1 };
+        const items = (cellItems.get(key) || []).map((item) => (
+          item.kind === "table"
+            ? { kind: "table", model: buildTable(item.tableIndex) }
+            : item
+        ));
+        return { cell_index: cellIndex, col_span: meta.col_span, row_span: meta.row_span, items };
+      });
+      return { row_index: rowIndex, cells };
+    });
+    return { table_index: tableIndex, rows };
+  }
+
+  return topItems.map((item) => (
+    item.kind === "table"
+      ? { kind: "table", model: buildTable(item.tableIndex) }
+      : item
+  ));
+}
+
+// Render a nesting-aware table model as a CSS grid with EXPLICIT grid-line
+// placement. Arbitrary rowspan cannot ride grid auto-flow, so each cell is placed
+// at its resolved (row, col) start spanning col_span/row_span tracks. The grid
+// column of each cell is resolved with the standard table occupancy walk: a
+// rowspan from an earlier row reserves its slots so the next real cell in a later
+// row lands in the correct column (the folded vMerge "continue" cells left a
+// hole that the restart cell's rowspan fills). `renderParagraph` renders each
+// cell paragraph (the Review `renderOne` frame or the Generator paragraph),
+// preserving every id / editable hook -> the round-trip is intact. `options`:
+// { tableClass, cellClass, colsVar }.
+function renderMergedTableGrid(model, renderParagraph, options) {
+  const rows = model && Array.isArray(model.rows) ? model.rows : [];
+  const occupied = new Set(); // "gridRow:gridCol" (0-based)
+  let totalCols = 0;
+  const placedRows = rows.map((row, rowIndex) => {
+    let col = 0;
+    return (Array.isArray(row.cells) ? row.cells : []).map((cell) => {
+      while (occupied.has(`${rowIndex}:${col}`)) col += 1;
+      const colSpan = Math.max(1, Math.min(Number(cell.col_span) || 1, 1000));
+      const rowSpan = Math.max(1, Math.min(Number(cell.row_span) || 1, 1000));
+      const colStart = col;
+      for (let rr = rowIndex; rr < rowIndex + rowSpan; rr += 1) {
+        for (let cc = colStart; cc < colStart + colSpan; cc += 1) {
+          occupied.add(`${rr}:${cc}`);
+        }
+      }
+      col += colSpan;
+      totalCols = Math.max(totalCols, col);
+      return { cell, colStart, colSpan, rowStart: rowIndex, rowSpan };
+    });
+  });
+  const cols = Math.max(totalCols, 1);
+  const cellsHtml = placedRows.reduce((acc, rowCells) => acc.concat(rowCells), []).map((placed) => {
+    const inner = (placed.cell.items || []).map((item) => (
+      item.kind === "table"
+        ? renderMergedTableGrid(item.model, renderParagraph, options)
+        : renderParagraph(item.paragraph)
+    )).join("");
+    // CSS grid lines are 1-based; span keeps placement independent of track sizes.
+    const style = `grid-column:${placed.colStart + 1} / span ${placed.colSpan};grid-row:${placed.rowStart + 1} / span ${placed.rowSpan}`;
+    return `<div class="${options.cellClass}" style="${style}">${inner}</div>`;
+  }).join("");
+  return `<div class="${options.tableClass} ${options.tableClass}--spanned" style="--${options.colsVar}:${cols}">${cellsHtml}</div>`;
+}
+
+// Review-surface entry point: render a run of table-cell paragraphs that carries
+// merges and/or nesting as span-aware editable grids (studio-doc-table classes).
+function renderMergedReviewTable(cellParagraphs, renderOne) {
+  return buildMergedTableModel(cellParagraphs).map((item) => (
+    item.kind === "table"
+      ? renderMergedTableGrid(item.model, renderOne, {
+          tableClass: "studio-doc-table",
+          cellClass: "studio-doc-table-cell",
+          colsVar: "studio-table-cols",
+        })
+      : renderOne(item.paragraph)
+  )).join("");
 }
 
 function paragraphViewModel(paragraph, context) {
