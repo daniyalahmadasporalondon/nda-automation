@@ -361,10 +361,35 @@ window.generatorEditor = (function () {
         if (!meta || meta.table_index !== tableIndex) break;
         j += 1;
       }
-      out.push(renderTable(list.slice(i, j)));
+      out.push(renderTableRun(list.slice(i, j)));
       i = j;
     }
     return out.join("");
+  }
+
+  // A run of contiguous table-cell paragraphs. The Generator only ever
+  // synthesises PLAIN signoff grids, which render through renderTable below --
+  // byte-identical. A run that carries merged cells (w:gridSpan/w:vMerge) or
+  // nested tables (e.g. an imported document surfaced in the editor) routes to
+  // the shared span-aware grid renderer from redline-rendering.js -- the SAME one
+  // the Review grid uses -- parameterized with the Generator's classes. Falls
+  // back to renderTable when that shared helper is not loaded, so nothing breaks.
+  function renderTableRun(run) {
+    if (typeof tableRunHasMergesOrNesting === "function"
+      && typeof buildMergedTableModel === "function"
+      && typeof renderMergedTableGrid === "function"
+      && tableRunHasMergesOrNesting(run)) {
+      return buildMergedTableModel(run).map((item) => (
+        item.kind === "table"
+          ? renderMergedTableGrid(item.model, renderParagraph, {
+              tableClass: "generator-doc-table",
+              cellClass: "generator-doc-table-cell",
+              colsVar: "gen-table-cols",
+            })
+          : renderParagraph(item.paragraph)
+      )).join("");
+    }
+    return renderTable(run);
   }
 
   function tableMeta(paragraph) {

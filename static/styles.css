@@ -1151,6 +1151,20 @@ h3 {
   padding: 2px 0;
 }
 
+/* Merged / nested table parity with the Review grid (shared renderMergedTableGrid).
+   The .generator-doc-table grid rule above already sizes columns from
+   --gen-table-cols; the span-aware variant additionally carries inline
+   grid-column/grid-row placement per cell, so a colspan/rowspan lands by explicit
+   grid line. The Generator only synthesises plain grids, so this is inert for
+   generated NDAs and applies only to an imported merged/nested table. */
+.generator-document-render .generator-doc-table--spanned {
+  align-items: stretch;
+}
+
+.generator-document-render .generator-doc-table-cell .generator-doc-table {
+  margin: 8px 0 0;
+}
+
 .generator-document-render .paragraph-editable {
   outline: none;
   padding: 2px 4px;
